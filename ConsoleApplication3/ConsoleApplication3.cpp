@@ -36,13 +36,19 @@ HWND WINAPI window_from_dc_replacement(HDC dc)
 void patch_window_from_dc()
 {
 	DWORD old_prot;
-	unsigned __int64 wfdc = (unsigned __int64)GetProcAddress(GetModuleHandleA("user32.dll"), "WindowFromDC");
+	auto m = GetModuleHandleA("user32.dll");
+	if (!m) return;
+
+	auto ptr = GetProcAddress(m, "WindowFromDC");
+	if (!ptr) return;
+
+	unsigned __int64 wfdc = (unsigned __int64)ptr;
 
 	VirtualProtect((void*)wfdc, 14, PAGE_EXECUTE_WRITECOPY, &old_prot);
 
 	// jmp [eip + 0]
-	*(char*)(wfdc + 0) = 0xFF;
-	*(char*)(wfdc + 1) = 0x25;
+	*(char*)(wfdc + 0) = (char)0xFF;
+	*(char*)(wfdc + 1) = (char)0x25;
 	*(unsigned*)(wfdc + 2) = 0x00000000;
 	*(unsigned __int64*)(wfdc + 6) = (unsigned __int64)&window_from_dc_replacement;
 }
@@ -90,6 +96,9 @@ void test_pbuffer()
 	wglGetPbufferDCARB = (PFNWGLGETPBUFFERDCARBPROC)wglGetProcAddress("wglGetPbufferDCARB");
 	wglReleasePbufferDCARB = (PFNWGLRELEASEPBUFFERDCARBPROC)wglGetProcAddress("wglReleasePbufferDCARB");
 	wglDestroyPbufferARB = (PFNWGLDESTROYPBUFFERARBPROC)wglGetProcAddress("wglDestroyPbufferARB");
+
+
+
 
 	wglChoosePixelFormatARB(dc, attribs, NULL, 1, &pbf, &n);
 	pb = wglCreatePbufferARB(dc, pbf, 256, 256, NULL);
@@ -145,7 +154,13 @@ void test_fbo(LPCSTR str)
 	*(PROC*)&glCheckFramebufferStatus = wglGetProcAddress("glCheckFramebufferStatus");
 
 	//const char* vendor = (const char*)glGetString(GL_VENDOR);
+	int major, minor;
+	glGetIntegerv(GL_MAJOR_VERSION, &major);
+	glGetIntegerv(GL_MINOR_VERSION, &minor);
+
 	printf("%s\n", vendor);
+	printf("%s\n", glGetString(GL_RENDERER));
+	printf("OpenGL %d.%d\n", major, minor);
 
 	glGenRenderbuffers(1, &cb);
 	glBindRenderbuffer(GL_RENDERBUFFER, cb);
@@ -168,27 +183,50 @@ int main(int argc, const char* argv[])
 {
 	patch_window_from_dc();
 
-	char devid[32];
+	DISPLAY_DEVICEA* devices = new DISPLAY_DEVICEA[128];
+	for (int i = 0; i < 128; i++) devices[i].cb = sizeof(DISPLAY_DEVICEA);
 
-	if (1) {
-		DISPLAY_DEVICEA dev;
-		int k = 0;
-		dev.cb = sizeof(dev);
-		dev.StateFlags = DISPLAY_DEVICE_ATTACHED_TO_DESKTOP;
-		while (EnumDisplayDevicesA(NULL, k, &dev, 0))
+
+	int di = 0;
+	int oi = 0;
+	while (EnumDisplayDevicesA(NULL, di, &devices[oi], 0))
+	{
+		auto dev = devices[oi];
+		if (dev.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
 		{
-			if (strstr(dev.DeviceString, "NVIDIA")) {
-				strcpy_s(devid, dev.DeviceName);
+			printf("DEVICE %d\n", oi);
+			printf("  display: \"%s\"\n", dev.DeviceName);
+			printf("  name:    \"%s\"\n", dev.DeviceString);
+			printf("  id:      \"%s\"\n", dev.DeviceID);
+			printf("  key:     \"%s\"\n", dev.DeviceKey);
+			if (dev.StateFlags != 0) {
+				printf("  flags:   ");
+				if (dev.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) printf("desktop ");
+				if (dev.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) printf("primary ");
+				if (dev.StateFlags & DISPLAY_DEVICE_ACTIVE) printf("active ");
+				if (dev.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) printf("mirroring ");
+				if (dev.StateFlags & DISPLAY_DEVICE_MODESPRUNED) printf("modespruned ");
+				if (dev.StateFlags & DISPLAY_DEVICE_REMOVABLE) printf("removable ");
+				if (dev.StateFlags & DISPLAY_DEVICE_REMOVABLE) printf("vga ");
+				printf("\n");
 			}
-			printf("%s\n", dev.DeviceString);
-			printf("%s\n", dev.DeviceName);
-			k += 1;
+			printf("\n");
+			oi++;
 		}
+		di++;
 	}
-	//"\\\\.\\DISPLAY1"
 
-	test_fbo(devid);
-	//test_pbuffer();
+	int index = -1;
+	while (index < 0 || index >= oi) {
+		printf("enter device index: ");
+		scanf_s("%d", &index);
+	}
+
+	char device[32];
+	strcpy_s(device, devices[index].DeviceName);
+
+	test_fbo(device);
+	test_pbuffer();
 
 	return 0;
 }
