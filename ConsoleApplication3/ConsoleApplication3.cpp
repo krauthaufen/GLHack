@@ -12,11 +12,10 @@
 #include "glext.h"
 #include "wglext.h"
 
+static HWND wnd = NULL;
 
 HWND WINAPI window_from_dc_replacement(HDC dc)
 {
-	static HWND wnd = NULL;
-
 	if (dc == NULL)
 		return NULL;
 
@@ -25,6 +24,7 @@ HWND WINAPI window_from_dc_replacement(HDC dc)
 		memset(&wc, 0, sizeof(wc));
 		wc.lpfnWndProc = DefWindowProc;
 		wc.hInstance = GetModuleHandleA(NULL);
+
 		wc.lpszClassName = "_dummy_window_class_";
 		RegisterClassA(&wc);
 		wnd = CreateWindowA(wc.lpszClassName, NULL, WS_POPUP, 0, 0, 32, 32, NULL, NULL, wc.hInstance, NULL);
@@ -115,7 +115,7 @@ void test_pbuffer()
 }
 
 
-void test_fbo(LPCSTR str)
+void test_fbo(LPCSTR str, char devName[128])
 {
 	PIXELFORMATDESCRIPTOR pfd;
 	int pfi;
@@ -133,7 +133,7 @@ void test_fbo(LPCSTR str)
 	GLenum res;
 
 	HGLRC glrc;
-	HDC dc = CreateDCA(str, str, NULL, NULL);
+	HDC dc = CreateDCA(str, devName, NULL, NULL);
 	memset(&pfd, 0, sizeof(pfd));
 	pfd.nSize = sizeof(pfd);
 	pfd.nVersion = 1;
@@ -144,7 +144,6 @@ void test_fbo(LPCSTR str)
 	glrc = wglCreateContext(dc);
 	wglMakeCurrent(dc, glrc);
 
-	vendor = (char*)glGetString(GL_VENDOR);
 	*(PROC*)&glGenRenderbuffers = wglGetProcAddress("glGenRenderbuffers");
 	*(PROC*)&glBindRenderbuffer = wglGetProcAddress("glBindRenderbuffer");
 	*(PROC*)&glRenderbufferStorage = wglGetProcAddress("glRenderbufferStorage");
@@ -153,14 +152,13 @@ void test_fbo(LPCSTR str)
 	*(PROC*)&glFramebufferRenderbuffer = wglGetProcAddress("glFramebufferRenderbuffer");
 	*(PROC*)&glCheckFramebufferStatus = wglGetProcAddress("glCheckFramebufferStatus");
 
-	//const char* vendor = (const char*)glGetString(GL_VENDOR);
 	int major, minor;
 	glGetIntegerv(GL_MAJOR_VERSION, &major);
 	glGetIntegerv(GL_MINOR_VERSION, &minor);
-
-	printf("%s\n", vendor);
-	printf("%s\n", glGetString(GL_RENDERER));
-	printf("OpenGL %d.%d\n", major, minor);
+	printf("  vendor:   %s\n", glGetString(GL_VENDOR));
+	printf("  renderer: %s\n", glGetString(GL_RENDERER));
+	printf("  version:  OpenGL %d.%d\n", major, minor);
+	printf("  glsl:     %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION_ARB));
 
 	glGenRenderbuffers(1, &cb);
 	glBindRenderbuffer(GL_RENDERBUFFER, cb);
@@ -171,11 +169,30 @@ void test_fbo(LPCSTR str)
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, cb);
 
 	res = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-	//	if (res != GL_FRAMEBUFFER_COMPLETE) _asm int 3
+	if (res != GL_FRAMEBUFFER_COMPLETE) printf("ERROR\n");
 
 	glClearColor(0.5f, 0, 1, 0);
 	glClear(GL_COLOR_BUFFER_BIT);
 	glReadPixels(0, 0, 256, 256, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+
+	wglMakeCurrent(dc, nullptr);
+	wglDeleteContext(glrc);
+	DeleteDC(dc);
+}
+
+
+int readDevices(DISPLAY_DEVICEA* devices, int cnt)
+{
+	int di = 0;
+	int oi = 0;
+	for(int i = 0; i < cnt; i++) devices[i].cb = sizeof(DISPLAY_DEVICEA);
+
+	while (oi < cnt && EnumDisplayDevicesA(NULL, di, &devices[oi], 0))
+	{
+		if (devices[oi].StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) oi++;
+		di++;
+	}
+	return oi;
 }
 
 
@@ -184,49 +201,51 @@ int main(int argc, const char* argv[])
 	patch_window_from_dc();
 
 	DISPLAY_DEVICEA* devices = new DISPLAY_DEVICEA[128];
-	for (int i = 0; i < 128; i++) devices[i].cb = sizeof(DISPLAY_DEVICEA);
+	int cnt = readDevices(devices, 128);
 
-
-	int di = 0;
-	int oi = 0;
-	while (EnumDisplayDevicesA(NULL, di, &devices[oi], 0))
+	for (int di = 0; di < cnt; di++)
 	{
-		auto dev = devices[oi];
-		if (dev.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
-		{
-			printf("DEVICE %d\n", oi);
-			printf("  display: \"%s\"\n", dev.DeviceName);
-			printf("  name:    \"%s\"\n", dev.DeviceString);
-			printf("  id:      \"%s\"\n", dev.DeviceID);
-			printf("  key:     \"%s\"\n", dev.DeviceKey);
-			if (dev.StateFlags != 0) {
-				printf("  flags:   ");
-				if (dev.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) printf("desktop ");
-				if (dev.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) printf("primary ");
-				if (dev.StateFlags & DISPLAY_DEVICE_ACTIVE) printf("active ");
-				if (dev.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) printf("mirroring ");
-				if (dev.StateFlags & DISPLAY_DEVICE_MODESPRUNED) printf("modespruned ");
-				if (dev.StateFlags & DISPLAY_DEVICE_REMOVABLE) printf("removable ");
-				if (dev.StateFlags & DISPLAY_DEVICE_REMOVABLE) printf("vga ");
-				printf("\n");
-			}
+		auto dev = devices[di];
+		printf("DEVICE %d\n", di);
+		printf("  display: \"%s\"\n", dev.DeviceName);
+		printf("  name:    \"%s\"\n", dev.DeviceString);
+		printf("  id:      \"%s\"\n", dev.DeviceID);
+		printf("  key:     \"%s\"\n", dev.DeviceKey);
+		if (dev.StateFlags != 0) {
+			printf("  flags:   ");
+			if (dev.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) printf("desktop ");
+			if (dev.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) printf("primary ");
+			if (dev.StateFlags & DISPLAY_DEVICE_ACTIVE) printf("active ");
+			if (dev.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) printf("mirroring ");
+			if (dev.StateFlags & DISPLAY_DEVICE_MODESPRUNED) printf("modespruned ");
+			if (dev.StateFlags & DISPLAY_DEVICE_REMOVABLE) printf("removable ");
+			if (dev.StateFlags & DISPLAY_DEVICE_VGA_COMPATIBLE) printf("vga ");
 			printf("\n");
-			oi++;
 		}
-		di++;
+		printf("\n");
 	}
 
+	char line[128];
+
 	int index = -1;
-	while (index < 0 || index >= oi) {
+	while (index < 0 || index >= cnt) {
 		printf("enter device index: ");
-		scanf_s("%d", &index);
+
+		fgets(line, 128, stdin);
+
+		if (sscanf_s(line, "%d", &index) != 1 || index < 0 || index >= cnt) {
+			auto e = strchr(line, '\n');
+			if(e) *e = '\0';
+			printf("  %s is not a valid index\n", line);
+			index = -1;
+		}
 	}
 
 	char device[32];
 	strcpy_s(device, devices[index].DeviceName);
+	test_fbo(device, devices[index].DeviceID);
 
-	test_fbo(device);
-	test_pbuffer();
+
 
 	return 0;
 }
